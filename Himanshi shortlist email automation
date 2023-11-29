@@ -1,0 +1,162 @@
+function sendCustomizedEmails() {
+  // Set the sheet where your data is stored
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Mailer'); // Replace 'Sheet1' with your sheet name
+
+  // Get the last row with data
+  var lastRow = sheet.getLastRow();
+
+  // Get data from the sheet
+  var data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+  // Create an object to store counselor data for each POD leader
+  var podLeadersData = {};
+
+  // Iterate through the data and organize it by POD leader
+for (var i = 0; i < data.length; i++) {
+  var counselorName = data[i][3]; // Assuming the counselor name is in the 4th column
+  var podLeaderEmail = data[i][2]; // Assuming the POD leader's email is in the 3rd column
+  var seniorManagerEmail = data[i][1]; // Assuming the Senior Manager's email is in the 2nd column
+
+ 
+  // Create or update counselor data for the corresponding POD leader
+  if (!podLeadersData[podLeaderEmail]) {
+    podLeadersData[podLeaderEmail] = {
+      counselorData: [],
+      podLeaderName: data[i][2],
+      Pname: data[i][16],// Assuming the POD leader's name is in the 3rd column
+    };
+  }
+
+  podLeadersData[podLeaderEmail].counselorData.push({
+    counselorName: counselorName,
+    ISLShared: data[i][4], // Assuming ISL Shared data is in the 5th column
+    ISLCaptured: data[i][5], // Assuming ISL Captured data is in the 6th column
+    ISLAudited: data[i][6], // Assuming ISL Audited data is in the 7th column
+    CollegePitched: data[i][7],
+    ModeofFinance: data[i][8],
+    ReferralPitched: data[i][9],
+    Timelinesdiscussed: data[i][10],
+    NextSteps: data[i][11],
+    LeapServices: data[i][12],
+    FrameworkFollowed: data[i][13],
+    Comment: data[i][14],
+    
+
+    // Add more fields as needed
+  });
+}
+
+// Iterate through the POD leaders and send emails
+for (var podLeaderEmail in podLeadersData) {
+  if (podLeadersData.hasOwnProperty(podLeaderEmail)) {
+    // Customize the email body with data for each POD leader
+    var podLeaderName = podLeadersData[podLeaderEmail].Pname;
+
+    // Find the correct row index for the current podLeaderEmail
+    var rowIndex;
+    for (var j = 0; j < data.length; j++) {
+  if (data[j][2] === podLeaderEmail) { // Assuming the email is in the 3rd column
+    rowIndex = j;
+    break;
+  }
+}
+
+     if (rowIndex !== undefined) {
+      var dashboardLink = data[rowIndex][15]; // Assuming the hyperlink is in the 16th column (column P)
+
+      var emailBody = 'Dear ' + podLeaderName + ',<br><br>';
+      emailBody += '<style>' +
+      '.light-red { background-color: #FFC0C0; }' + // Use your preferred light red color
+      '</style>';
+      emailBody += 'PFA detailed call level report:\n\n';
+
+      // Check if the dashboardLink is defined before using it
+      if (dashboardLink) {
+        emailBody += '<a href="' + dashboardLink + '">Sheet Link.</a>\n\n';
+        emailBody += 'Please refer to the "Dump" sheet in this sheet to check lead level call recordings.<br><br>';
+      } else {
+        emailBody += 'Dashboard link not available.<br><br>';
+      }
+    emailBody += 'Please find below the Adoption & Audit Report for your team for the timeline <b>' + data[0][0] + '.</b> The report will be shared with you for all counsellors, you can choose to take action for any counsellor as per their performance and potential.<br><br>';
+ 
+    // Create an HTML table for the counselor data
+    emailBody += '<table style="border-collapse: collapse; width: 100%;" border="1">' +
+    '<tr>' +
+    '<th style="padding: 10px;">Counselor Name</th>' +
+    '<th style="padding: 10px;">ISL Shared</th>' +
+    '<th style="padding: 10px;">ISL Audited</th>' +
+    '<th style="padding: 10px;">ISL Audited%</th>' +
+    '<th style="padding: 10px;">College Pitched</th>' +
+    '<th style="padding: 10px;">Mode of Finance</th>' +
+    '<th style="padding: 10px;">Referral Pitched</th>' +
+    '<th style="padding: 10px;">College & Budget discussion on the same call</th>' +
+    '</tr>';
+
+    // Add rows for each counselor
+    for (var j = 0; j < podLeadersData[podLeaderEmail].counselorData.length; j++) {
+  var counselor = podLeadersData[podLeaderEmail].counselorData[j];
+
+  // Convert decimal values to percentages
+  // Add this inside the loop that generates the percentage rows
+var ISLAuditedPercentage = counselor.ISLAudited / counselor.ISLShared * 100;
+var CollegePitchedPercentage = counselor.CollegePitched * 100;
+var ModeofFinancePercentage = counselor.ModeofFinance * 100;
+var ReferralPitchedPercentage = counselor.ReferralPitched * 100;
+var FrameworkFollowedPercentage = counselor.FrameworkFollowed * 100;
+
+emailBody += '<tr style="text-align: center;">' +
+  '<td>' + counselor.counselorName + '</td>' +
+  '<td>' + counselor.ISLShared + '</td>' +
+  '<td>' + counselor.ISLAudited + '</td>' +
+  '<td style="background-color: ' + (ISLAuditedPercentage < 30 ? '#FFC0C0' : '') + ';">' + ISLAuditedPercentage.toFixed(0) + '%</td>' +
+  '<td style="background-color: ' + (CollegePitchedPercentage < 30 ? '#FFC0C0' : '') + ';">' + CollegePitchedPercentage.toFixed(0) + '%</td>' +
+  '<td style="background-color: ' + (ModeofFinancePercentage < 30 ? '#FFC0C0' : '') + ';">' + ModeofFinancePercentage.toFixed(0) + '%</td>' +
+  '<td style="background-color: ' + (ReferralPitchedPercentage < 30 ? '#FFC0C0' : '') + ';">' + ReferralPitchedPercentage.toFixed(0) + '%</td>' +
+  '<td style="background-color: ' + (FrameworkFollowedPercentage < 30 ? '#FFC0C0' : '') + ';">' + FrameworkFollowedPercentage.toFixed(0) + '%</td>' +
+  '</tr>';
+
+}
+
+    emailBody += '</table><br>';
+
+    emailBody += 'Please discuss this report with your team & share actionable feedback to drive adoption in at least 50% of calls.<br><br>';
+
+    // Check if the comment column has a non-blank entry
+    if (data[0][14] !== '') {
+      emailBody += '<table style="border-collapse: collapse;" border="1"><tr><th>Counselor Name</th><th>Comments</th></tr>';
+
+      // Add rows for each counselor with a non-blank comment
+      for (var j = 0; j < podLeadersData[podLeaderEmail].counselorData.length; j++) {
+      var counselor = podLeadersData[podLeaderEmail].counselorData[j];
+
+    // Check if the comment is non-blank
+    if (counselor.Comment !== '') {
+    // Replace line breaks in the comment with <br> tags
+    var formattedComment = counselor.Comment.replace(/\n/g, '<br>');
+    emailBody += '<tr><td>' + counselor.counselorName + '</td><td>' + formattedComment + '</td></tr>';
+  }
+}
+
+    emailBody += '</table>';
+    }
+
+    // Set the subject of the email with POD leader's name
+    var emailSubject = 'Weekly Audit & Adoption Report for ' + podLeaderName + '\'s team';
+    var ccEmails = [
+    'rohith.m@leapfinance.com',
+    'chetan.sharma@leapfinance.com',
+    'priyanka.subramanian@leapfinance.com',
+    'megha.narula@leapfinance.com'
+    ];
+
+    var ccString = ccEmails.join(',');
+
+    // Send the email
+    GmailApp.sendEmail(podLeaderEmail, emailSubject, '', {
+      cc: seniorManagerEmail + ','+ ccString, // Add more CC recipients as needed
+      htmlBody: emailBody, // Set the HTML body for formatting
+    });
+  }
+}
+}
+}
