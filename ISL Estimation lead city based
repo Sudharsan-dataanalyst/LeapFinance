@@ -1,0 +1,25 @@
+select coalesce(pref_country,'All Country')  as pref_country
+,count(distinct pre_user_id) as isl
+,count(case when  city_com like '%beng%ru%' or city_com like '%bang%lore%' then pre_user_id end) as bng_isl
+,count(case when city_com is not null then pre_user_id end ) as city_coverage
+,count(case when city_com is not null then pre_user_id end )::numeric/count(distinct pre_user_id)::numeric as coverage_percent
+,round(count(case when  city_com like '%beng%ru%' or city_com like '%bang%lore%' then pre_user_id end)::numeric/(count(case when city_com is not null then pre_user_id end )::numeric/count(distinct pre_user_id)::numeric),0) as estimation
+from (
+select a.pre_user_id
+,case when preferred_country in ('UK','Ireland') then 'UKI'
+      when preferred_country = 'USA' then 'USA'
+      when preferred_country = 'Canada' then 'Canada'
+      else 'Others' end as pref_country
+,lower(coalesce(f.current_residence_city,d.city)) as city_com
+,min(a.created_at)::date as dd
+from pre_user_state_change_log a
+left join (select pre_user_id,preferred_intake,preferred_country from  pre_user_admission_profile where is_delete= false ) b on a.pre_user_id=b.pre_user_id
+left join (select user_id,address_id from emergency_contact where is_delete = false ) g on a.pre_user_id=g.user_id
+left join (select id,city from address where is_delete = false) d on g.address_id=d.id 
+left join (select pre_user_id,current_residence_city from onboarded_student where is_delete = false) f on a.pre_user_id=f.pre_user_id
+where a.counseling_stage ='LS_COLLEGE_SHORTLISTED'
+and a.created_at::date between '2023-10-01' and '2023-10-31'
+and b.preferred_intake::text like '%24%'
+group by 1,2,3
+) as x
+group by rollup(pref_country)
