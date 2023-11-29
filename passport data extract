@@ -1,0 +1,36 @@
+import pandas as pd
+import os
+import zipfile
+
+# The directory where the ZIP files are stored
+parent_directory = 'C:\passport_extract'  # replace with the path to your parent directory
+
+all_users_data = []
+
+# Loop through each ZIP file in the directory
+for zip_filename in os.listdir(parent_directory):
+    if zip_filename.endswith('.zip'):
+        with zipfile.ZipFile(os.path.join(parent_directory, zip_filename), 'r') as zip_ref:
+            # Extract all files to a temporary directory
+            temp_extract_dir = os.path.join(parent_directory, "temp_extract")
+            zip_ref.extractall(temp_extract_dir)
+            
+            for filename in os.listdir(temp_extract_dir):
+                if filename.endswith('.csv'):
+                    filepath = os.path.join(temp_extract_dir, filename)
+                    
+                    # Reading data using column indices 1 (for 'B') and 2 (for 'C')
+                    df = pd.read_csv(filepath, usecols=[1, 2], header=None)
+                    
+                    user_data = dict(zip(df[1], df[2]))
+                    all_users_data.append(user_data)
+                    
+            # Cleanup the temporary directory by removing its contents
+            for file in os.listdir(temp_extract_dir):
+                os.remove(os.path.join(temp_extract_dir, file))
+
+# Convert the list of user dictionaries to a DataFrame
+combined_df = pd.DataFrame(all_users_data)
+
+# Save to a new CSV file
+combined_df.to_csv('combined_data.csv', index=False)
