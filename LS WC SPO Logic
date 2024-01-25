@@ -1,0 +1,190 @@
+-- with table1 as 
+-- (
+select puc.pre_user_id
+,case   when cref.referral_pre_user_id is not null then 'Referral'
+
+        when spoi.user_id is not null and spoi.payment_date::date<puc.welcome_call_done_date::date then 'IELTS Premium'
+        
+        when sil.created_at::date >= '2023-04-01' and sil.created_at::date<=puc.welcome_call_done_date::date then 'IELTS Rest'
+        
+        when puc.user_pay_type in ('Auto LS', 'AUTO_LS_UK_1', 'AUTO_LS_UK_2','AUTO_LS_CANADA_2','AUTO_LS_USA_1','AUTO_LS_CANADA_1') and (spoc.payment_date::date - crm.created_at::date) < 30 
+            and lower(crm.utm_source) like '%face%' then 'Facebook'
+            
+        when crm.campaign_type like '%coun%' and crm.form_id not in ('internal_portal') and crm.ad_id is not null 
+            and (spoc.payment_date::date - crm.created_at::date)< 30 and lower(crm.utm_source) like '%face%'  then 'Facebook'
+            
+        when puc.user_pay_type in ('Auto LS', 'AUTO_LS_UK_1', 'AUTO_LS_UK_2','AUTO_LS_CANADA_2','AUTO_LS_USA_1','AUTO_LS_CANADA_1') and (spoc.payment_date::date  - crm.created_at::date) < 30 
+            and lower(crm.utm_source) like '%google%' then 'Google'
+        
+        when crm.campaign_type like '%coun%' and crm.form_id not in ('internal_portal') and crm.ad_id is not null 
+            and (spoc.payment_date::date  - crm.created_at::date)< 30 and lower(crm.utm_source) like '%google%'   then 'Google'    
+        
+        when lower(crm.utm_source) like '%face%' and pllu.created_at::date <> sil.created_at::date and (spoc.payment_date::date - pllu.created_at::date)< 30 then 'Facebook' 
+        
+        when lower(crm.utm_source) like '%google%' and pllu.created_at::date <> sil.created_at::date and (spoc.payment_date::date - pllu.created_at::date)< 30 then 'Google'
+        
+        when cl.pre_user_id is not null and (spoc.payment_date::date-cl.created_at::date)< 30 then 'Calling'
+        
+        else 'Others'
+
+end as source
+,pap.preferred_country tofu_preferred_country
+,puc.welcome_call_done_date
+,case when puc.welcome_call_done_date is not null then spoc.payment_date end as wc_date
+,puc.welcome_call_done_user_id as welcome_call_sale_person_id
+,puc.welcome_call_source
+-- ,cls.calculated_lead_intake as bofu_intake
+,ob.current_residence_city
+,crm.created_at as counselling_registration_created_at
+,crm.utm_source
+,crm.form_id
+,crm.campaign_type
+,puc.user_pay_type
+,crm.ad_id
+,cl.created_at ctmb_created_at
+,sil.created_at as sem_created_at
+,pllu.created_at::date as lead_created_date
+,isl.isl_key
+,isl.isl_date
+,sti.sti_key
+,sti.sti_date
+,row_number() over (partition by puc.pre_user_id,spoc.payment_date order by crm.created_at desc,cl.created_at desc) as rn
+
+
+from 
+(
+    select pre_user_id
+    ,welcome_call_done_date
+    ,user_pay_type
+    ,welcome_call_done_user_id
+    ,welcome_call_source
+    from pre_user_counseling
+    where welcome_call_done_date is not null
+)puc
+
+left join
+(
+    select distinct referral_pre_user_id
+    from counsellor_referral
+
+) cref on puc.pre_user_id=cref.referral_pre_user_id
+
+join
+(
+    select id
+    ,campaign_type
+    ,form_id
+    ,created_at
+    from pre_login_leap_user
+    where (is_test_lead = false or is_test_lead is null)
+)pllu on puc.pre_user_id=pllu.id
+
+left join 
+(
+    select user_id,payment_date,lead(payment_date) over (partition by user_id order by payment_date ) as next_payment
+    from scholar_payment_order
+    where payment_type = 'COUNSELLING_FEE'
+    and status in ('SUCCESS','REFUNDED')
+)spoc on spoc.user_id = puc.pre_user_id
+
+-- left join
+-- (
+--     select pre_user_id
+--     ,calculated_lead_intake 
+--     from  calculated_lead_status_metadata 
+--     where is_delete= false 
+-- ) cls on puc.pre_user_id=cls.pre_user_id
+
+left join
+
+(
+    select distinct user_id,payment_date,row_number() over (partition by user_id order by payment_date asc) as rw
+    from scholar_payment_order 
+    where payment_type in ('GENERIC_PAYMENT','IELTS_PREMIUM_3_FEE','IELTS_SELECT_FEE') and status in ('SUCCESS')
+    and amount > '999'
+)spoi on spoi.user_id = puc.pre_user_id and spoi.rw=1
+
+left join 
+
+(
+    select pre_user_id,created_at
+    from sem_ielts_lead
+)sil on sil.pre_user_id = puc.pre_user_id
+
+left join
+(
+    select pre_user_id,preferred_country
+    from pre_user_admission_profile
+)pap on pap.pre_user_id = puc.pre_user_id
+
+left join
+(
+
+    select distinct pre_user_id,created_at::date
+    from 
+    (   select pre_user_id,created_at
+        from counselling_registration cr1 
+        left join 
+        (
+            select id, slot_type from counselling_slot
+        )cs1 on cs1.id = cr1.counselling_slot_id 
+        where cr1.form_id in ('internal_portal') and cs1.slot_type in (1, 2)
+        union
+        select pre_user_id,created_at
+        from ameyo_call_merge
+    )calls 
+    
+
+)cl on cl.pre_user_id= puc.pre_user_id and cl.created_at <= spoc.payment_date::date
+
+left join
+(
+    select pre_user_id,created_at,campaign_type,form_id,ad_id,utm_source
+    from counselling_registration cr1 
+    left join 
+    (
+        select id, slot_type from counselling_slot
+    )cs1 on cs1.id = cr1.counselling_slot_id 
+    where cs1.slot_type in (1, 2)
+
+)crm on crm.pre_user_id = puc.pre_user_id and crm.created_at::date <= spoc.payment_date::date
+
+left join
+(
+    select pre_user_id,current_residence_city
+    from onboarded_student
+)ob on ob.pre_user_id = puc.pre_user_id
+
+
+left join 
+(
+    select id as isl_key,pre_user_id,updated_at as isl_date
+    from pre_user_state_change_log
+    where counseling_stage ='LS_COLLEGE_SHORTLISTED'
+)isl on isl.pre_user_id = puc.pre_user_id and isl.isl_date::date >= spoc.payment_date::date and isl.isl_date::date <spoc.next_payment::date
+
+left join 
+(
+    select id as sti_key,pre_user_id,updated_at as sti_date
+    from pre_user_state_change_log
+    where counseling_stage ='LS_APPLICATION_SUBMITTED_TO_INSTITUTE'
+)sti on sti.pre_user_id = puc.pre_user_id and sti.sti_date::date >= spoc.payment_date::date and sti.sti_date::date <spoc.next_payment::date
+
+
+
+where spoc.payment_date::date >= '2023-01-01' 
+
+-- )
+
+-- select to_char(welcome_call_done_date,'yyyymm') as wc_month
+-- ,source
+-- ,count(distinct pre_user_id)
+-- from table1
+-- where rn=1
+-- group by rollup(1,2)
+
+
+
+
+
+
