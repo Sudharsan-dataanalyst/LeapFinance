@@ -1,0 +1,264 @@
+with wc as
+(
+
+    select md5(primary_id) as wc_key,pre_user_id,first_wc_date,wc_date,wc_done_sales_person_id,welcome_call_source,wc_filled_date,wc_updated_date
+    ,coalesce(lead(wc_date) over (partition by pre_user_id order by wc_date),current_date) as next_wc_date
+    from
+    (
+        select *,row_number() over (partition by primary_id order by wc_date desc)  as rnum
+        from
+            (
+                select pre_user_id
+                ,s.payment_date
+                ,p.welcome_call_done_date as first_wc_date
+                ,case when cast(s.payment_date as date) > cast(welcome_call_done_date as date) then s.payment_date else p.welcome_call_done_date end as wc_date
+                ,p.welcome_call_done_user_id as wc_done_sales_person_id
+                ,p.welcome_call_source
+                ,p.welcome_call_details_filled_date as wc_filled_date
+                ,p.welcome_call_details_updated_date as wc_updated_date
+                ,pre_user_id || ' ' || cast(case when cast(s.payment_date as date) > cast(welcome_call_done_date as date) then s.payment_date else p.welcome_call_done_date end as varchar) as primary_id
+                from pre_user_counseling p
+                left join scholar_payment_order s on s.user_id = p.pre_user_id 
+                                                  and s.payment_type = 'COUNSELLING_FEE' 
+                                                  and s.status in ('SUCCESS','REFUNDED') 
+                where p.welcome_call_done_date is not null
+            ) a  
+    ) b where rnum = 1
+)
+
+,wc_source as 
+(
+  select wc_key,pre_user_id,first_wc_date,wc_date,wc_done_sales_person_id,welcome_call_source,wc_filled_date,wc_updated_date,next_wc_date,wc_source
+from   
+    (select wc.*,offline.offline_event_id,offline.event_start_date::date,row_number() over (partition by wc.wc_key order by offline.event_start_date desc) as rn1
+            ,case 
+                 when referral_pre_user_id is not null then '01. REFERRAL'
+                 when cast(wc.wc_date as date) = cast(offline.event_start_date as date) and attendance = 'Attended'  then '02. EVENT WALKINS'
+                 when ( cast(wc.wc_date as date) - cast(offline.event_start_date as date) ) <= 30 then '03. OFFLINE EVENT'
+                 when spoi.user_id is not null then '04. IELTS_PREMIUM'
+                 when sil.pre_user_id is not null then '05. IELTS_REST'
+            end as wc_source
+    from wc
+    left join 
+    (
+        select distinct referral_pre_user_id
+        from counsellor_referral
+        where is_delete = false 
+    
+    ) cref on wc.pre_user_id=cref.referral_pre_user_id
+    
+    left join pre_login_leap_user pllu on wc.pre_user_id = pllu.id
+    
+    left join 
+    (
+        select pre_user_id
+        ,oer.offline_event_id
+        ,oe.event_start_date
+        ,case
+            when (oer.assigned_counsellor is not null or oer.csp_counsellor is not null) then 'Attended' 
+            end as attendance
+        from offline_event_registrations oer
+        left join offline_events oe on oer.offline_event_id = oe.id
+        where oer.is_delete = false
+        and oe.is_delete = false
+    
+    ) offline on offline.pre_user_id = wc.pre_user_id 
+              and cast(event_start_date as date) <= cast(wc.wc_date as date)
+    
+    left join
+    (
+        select user_id,min(payment_date) as first_premium_fee
+        from scholar_payment_order 
+        where payment_type in ('GENERIC_PAYMENT','IELTS_PREMIUM_3_FEE','IELTS_SELECT_FEE') 
+        and status in ('SUCCESS') and amount > '999'
+        group by 1
+        
+    ) spoi on spoi.user_id = wc.pre_user_id 
+           and cast(spoi.first_premium_fee as date) <= cast(wc.wc_date as date)
+        
+    left join 
+    (
+        select pre_user_id, min(created_at) as dt from 
+        sem_ielts_lead sil 
+        where cast(sil.created_at as date) >= '2023-04-01'
+        group by 1
+        
+     ) sil on sil.pre_user_id = wc.pre_user_id 
+           and cast(sil.dt as date) <= cast(wc.wc_date as date) 
+
+) a
+where rn1 = 1
+) ,final_source as 
+(
+    select wc_key,
+           pre_user_id,
+           first_wc_date,
+           wc_date,
+           wc_done_sales_person_id,
+           welcome_call_source,
+           wc_filled_date,
+           wc_updated_date,
+           case 
+               when wc_source is not null then wc_source
+               when wc_source is null and lower(channel) like '%facebook%' and lower(channel) like '%counse%'  then '06. FACEBOOK'
+               when wc_source is null and (lower(channel) like '%search%'  or lower(channel) like '%google%') and lower(channel) like '%counse%' then '07. GOOGLE'
+               when wc_source is null and (lower(channel) like '%youtube%'  or lower(channel) like 'yt%') and lower(channel) like '%counse%' then '08. YOUTUBE'
+               when last_calling_date is not null then '09. CALLING'
+               when wc_source is null and lower(channel) like '%organic%' then '10. ORGANIC'
+               else '11. OTHERS'
+           end as wc_source
+    from 
+    (
+        select wc.*,max(cast(crm.created_at as varchar)||'~'||utm_source||'~'||campaign_type) as channel
+                   ,max(crm.created_at) as last_crm_date, max(calls.created_at) as last_calling_date
+        from wc_source wc 
+        
+        left join
+        (
+            select  pre_user_id,cr.created_at,campaign_type,form_id,ad_id,utm_source,'cr table' as entry_source
+            from counselling_registration cr 
+            join counselling_slot cs on cs.id = cr.counselling_slot_id 
+            where cs.slot_type in (1, 2)
+            union
+            select pre_user_id,created_at,campaign_type,form_id,ad_id,utm_source,'auto_ls' as entry_source
+            from auto_ls_tracking
+          union
+            select id,created_at,campaign_type,form_id,ad_id,utm_source,'pre_login' as entry_source
+            from pre_login_leap_user
+            where date(created_at)< '2023-05-01'
+        
+        ) crm on crm.pre_user_id = wc.pre_user_id 
+              and date(wc.wc_date) >= date(crm.created_at)
+              and (date(wc.wc_date) - date(crm.created_at) <= 30)
+              
+        left join
+        (
+            select pre_user_id,cr.created_at
+            from counselling_registration cr 
+            join counselling_slot cs on cs.id = cr.counselling_slot_id 
+            where cr.form_id in ('internal_portal') and cs.slot_type in (1, 2)
+            union
+            select pre_user_id,created_at
+            from ameyo_call_merge
+        
+        )calls  ON calls.pre_user_id= wc.pre_user_id
+                and date(wc.wc_date) >= date(calls.created_at)
+                and (date(wc.wc_date) - date(calls.created_at) <= 30)
+              
+        
+          
+        group by 1,2,3,4,5,6,7,8,9,10
+    ) a
+)
+
+,funnel_metrics as
+(
+    select wc.*
+    ,min(isl.isl_date) as isl_date
+    ,min(sti.sti_date) as sti_date
+    ,min(adm.admit_date) as admit_date
+    ,min(vs.visa_approved) as visa_approved_date
+    from wc
+    left join
+    (
+        select pre_user_id,created_at as isl_date
+        from pre_user_state_change_log
+        where counseling_stage ='LS_COLLEGE_SHORTLISTED'
+        
+    )isl on isl.pre_user_id = wc.pre_user_id 
+         and cast(isl.isl_date as date)>= cast(wc.wc_date as date)
+         and cast(isl.isl_date as date) < cast(wc.next_wc_date as date)
+    
+    
+    left join
+    (
+        select pre_user_id,created_at as sti_date
+        from pre_user_state_change_log
+        where counseling_stage ='LS_APPLICATION_SUBMITTED_TO_INSTITUTE'
+        
+    )sti on sti.pre_user_id = wc.pre_user_id 
+         and cast(sti.sti_date as date) >= cast(wc.wc_date as date) 
+         and cast(sti.sti_date as date) < cast(wc.next_wc_date as date)
+    
+    left join
+    (
+        select pre_user_id,updated_at as admit_date
+        from pre_user_state_change_log
+        where counseling_stage in ('LS_CONDITIONAL_ADMIT_RECEIVED','LS_UNCONDITIONAL_ADMIT_RECEIVED') 
+        
+    )adm on adm.pre_user_id = wc.pre_user_id 
+         and cast(adm.admit_date as date) >= cast(wc.wc_date as date) 
+         and cast(adm.admit_date as date) < cast(wc.next_wc_date as date)
+    
+    left join
+    (
+        select pre_user_id as user_id,created_at as visa_approved
+        from visa_status_change_log
+        where visa_status in ('VISA_APPROVED','GRANTED')
+        
+    )vs on vs.user_id = wc.pre_user_id 
+        and cast(visa_approved as date) >= cast(wc.wc_date as date) 
+        and cast(visa_approved as date) < cast(wc.next_wc_date as date)
+    
+    group by 1,2,3,4,5,6,7,8,9
+
+),final as
+(
+    select fs.*,fm.isl_date,fm.sti_date,fm.admit_date,fm.visa_approved_date
+    ,cls.calculated_lead_intake as bofu_intake
+    -- ,UPPER(left(lower(cls.calculated_lead_intake),4)|| '-' || right(cls.calculated_lead_intake,2)) as bofu_intake
+    ,case 
+        when coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%beng%ru%' 
+        or coalesce(ob.current_residence_city,ad.city,cm.city) ilike  '%bang%lore%' 
+        or  coalesce(ob.current_residence_city,ad.city,cm.city) ilike  '%devan%halli%' 
+        or coalesce(ob.current_residence_city,ad.city,cm.city) ilike  '%yelahanka%' then 'Bangalore'      
+  
+        when coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%pune%' 
+        or coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%beed%' 
+        or coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%lonav%' 
+        or coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%pimpri%' then 'Pune'
+                
+         when coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%ludhi%' 
+        or coalesce(ob.current_residence_city,ad.city,cm.city) ilike '%phillaur%'  then 'Ludhiana'
+          
+        when coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%mumbai%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%dombivli%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%borivli%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%kalyan%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%panvel%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%ulhasnagar%' then 'Mumbai'
+		
+		when coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%hyd%bad%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%secunderabad%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%kukatpalli%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%quthbullapur%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%lal%bahadur%nagar%'
+		OR coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%uppal%kalan%' then 'Hyderabad'
+		
+		when coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%chennai%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%ambattur%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%saint%thomas%mount%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%tambaram%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%pallavaram%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%avadi%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%injambakkam%' then 'Chennai'
+		
+		when coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%delhi%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%najafgarh%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%deoli%'
+		OR	coalesce(ob.current_residence_city,ad.city,cm.city)  ilike '%narela%' then 'Delhi'
+          
+        else 'Others' end as lead_city
+    ,pap.preferred_country
+    from final_source fs
+    join funnel_metrics fm on fs.wc_key = fm.wc_key
+    left join calculated_lead_status_metadata cls on fs.pre_user_id = cls.pre_user_id
+    left join onboarded_student ob on fs.pre_user_id=ob.pre_user_id
+    left join emergency_contact ec on fs.pre_user_id=ec.user_id
+    left join address ad on ec.address_id=ad.id
+    left join city_map cm on cm.pre_user_id = fs.pre_user_id
+    left join pre_user_admission_profile pap on pap.pre_useR_id = fs.pre_user_id
+)
+
+
+select * from final
